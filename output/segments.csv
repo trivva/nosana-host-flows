@@ -1,0 +1,3 @@
+segment,hosts,nos_received,probable_sale_30d,median_days_to_sale
+top 10%,67,209769.640169,0.8019579519730219,6
+other 90%,601,234733.99053100002,0.3729117991558647,2
