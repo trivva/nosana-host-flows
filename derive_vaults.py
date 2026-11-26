@@ -88,6 +88,5 @@ with open('data/market_vaults.csv','w') as f:
     f.write('market,market_address,vault_owner\n')
     for (slug,v),line in zip(rows,markets.splitlines()):
         f.write(f'{slug},{line.split()[1]},{v}\n')
-vals=",\n  ".join(f"('{v}', '{s}')" for s,v in rows)
 print(len(rows))
 

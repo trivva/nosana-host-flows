@@ -18,7 +18,7 @@ Author: Denis Foguenne · November 2026 · work in progress (v1)
 | Concentration | top 10% of hosts (67) receive **47%** of payouts |
 | Half-life in host wallets | **~7 days** (Kaplan-Meier, any outflow) |
 | Sold within 30 days | **36%** directly (CEX + DEX), **57%** including consolidation wallets that were emptied |
-| Large vs small hosts (sold within 30 days) | **80%** for the top 10% vs **37%** for the other 90% |
+| Large vs small hosts (sold within 30 days) | **80%** for the top 10% vs **38%** for the other 90% (both move NOS out at a similar speed, ~1 week half-life; small hosts mostly send it to unlabelled wallets) |
 | Main sell route | **Kraken deposit address** (one operator, 25 host wallets), not on-chain DEX pools |
 
 **Market impact:** the host sell flow is real but small: roughly $1.1–1.2k of NOS per day, under 0.5% of NOS daily trading volume. Host emissions are not a meaningful driver of NOS price pressure at current network usage.
@@ -47,10 +47,10 @@ The top destinations of host outflows (`sql/q5_host_outflow_destinations.sql`) w
 | DEX | OKX DEX router, Raydium NOS-USDC and WSOL-NOS (CLMM), Raydium Authority V4, Orca SOL-NOS, Titan Exchange |
 | Consolidation, then emptied | `9uVHh78U…`, `7YGRTc8m…`, `EkTvSTm9…` (personal wallets collecting from many hosts, near-zero NOS balance today) |
 | Consolidation, kept | `JC6fRXbo…`, `FHNGA3iZ…` (still hold the NOS) |
-| Other | everything else (~15% of host outflow volume was not labelled) |
+| Other | everything else: **26% of NOS paid to hosts** (32% of FIFO-matched outflows, 30% of all raw host outflows) |
 
 ### 4. Holding time (FIFO + Kaplan-Meier)
-`fifo_analysis.py` works per host: every payment day creates a lot, every outflow consumes the oldest lots first. Shares "sold within N days" only use NOS received at least N days before the end of the data (right-censoring). The holding curve is an amount-weighted Kaplan-Meier estimator.
+`fifo_analysis.py` works per host: every payment day creates a lot, every outflow consumes the oldest lots first. Shares "sold within N days" only use NOS received at least N days before the end of the data (right-censoring). The holding curve and the per-segment half-lives are amount-weighted Kaplan-Meier estimators (NOS still held at the end of the data is censored, not dropped).
 
 ---
 
@@ -58,11 +58,11 @@ The top destinations of host outflows (`sql/q5_host_outflow_destinations.sql`) w
 
 - **Upper bound on sell speed.** Hosts also sent out 345k NOS that cannot be matched to any payment in the period (bought, or held before August). The model assumes every host starts at zero on 13 Aug; if older NOS were sold first, rewards are actually held longer.
 - **CEX deposits are counted as sales.** A transfer to Kraken is likely, not certainly, a sale.
-- **Labels are partial.** About 15% of outflow volume goes to unlabelled addresses ("other").
+- **Labels are partial.** 26% of NOS paid to hosts ends up at unlabelled addresses ("other"), so direct sale shares are a lower bound on that side.
 - **Client filter is conservative.** A host that also rented GPUs is excluded (e.g. 3090 market: 112 → 77 addresses).
 - **Uptime rewards** may be paid from another address and are not included yet.
 - **Active markets only.** Markets closed before November are not in the vault list.
-- **Daily granularity.** Same-day receipt and sale count as a 0-day holding period.
+- **Daily granularity.** Same-day receipt and sale count as a 0-day holding period. When a host sends NOS to several categories on the same day, sale venues are matched to the oldest lots first (deterministic order, no intra-day timestamps yet).
 - Prices and volumes used for the market-impact estimate are approximate (NOS ≈ $0.41, ≈ $380k daily volume, early November 2026).
 
 ## Next steps (v2)

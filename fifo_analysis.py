@@ -23,6 +23,7 @@ SALE = {"cex", "dex"}                                  # direct sale venues
 PROBABLE_SALE = SALE | {"consolidated_emptied"}        # + consolidation wallets that were emptied
 ALL_EXITS = PROBABLE_SALE | {"consolidated_kept", "other"}
 END = pd.Timestamp("2026-11-11")                       # last day of data
+CAT_ORDER = {"cex": 0, "dex": 1, "consolidated_emptied": 2, "consolidated_kept": 3, "other": 4}
 
 received = pd.read_csv(ROOT / "data/q6a_received_per_host_day.csv", parse_dates=["day"])
 sent = pd.read_csv(ROOT / "data/q6b_sent_per_host_day.csv", parse_dates=["day"])
@@ -34,7 +35,8 @@ unmatched = {}     # outflows with no lot available (NOS held before the period 
 
 for host, r in received.groupby("host"):
     lots = deque([[d, a] for d, a in r.sort_values("day")[["day", "received"]].itertuples(index=False)])
-    events = sent[sent.host == host].sort_values("day")
+    # deterministic intra-day order (daily data has no timestamp): sale venues first, then the rest
+    events = sent[sent.host == host].assign(_o=lambda x: x.category.map(CAT_ORDER)).sort_values(["day", "_o"])
     queue = deque()
     for d, cat, amt in events[["day", "category", "sent"]].itertuples(index=False):
         # add lots received up to this day (assumption: received before sent on the same day)
@@ -101,6 +103,27 @@ top_n = max(1, round(len(per_host) * 0.10))
 big = set(per_host.index[:top_n])
 print(f"\nTop 10% of hosts ({top_n}) = {per_host.iloc[:top_n].sum()/total:.0%} of NOS received")
 
+def km_curve(cc, rr, horizon=60):
+    """Amount-weighted Kaplan-Meier on FIFO lots: event = lot left the wallet, censored = still held at END."""
+    lots = pd.concat([
+        cc.assign(event=1, t=cc.holding_days)[["t", "nos", "event"]],
+        rr.assign(event=0, t=(END - rr.day_received).dt.days)[["t", "nos", "event"]],
+    ])
+    out, s_ = [], 1.0
+    for t in range(0, horizon + 1):
+        at_risk = lots[lots.t >= t].nos.sum()
+        ev = lots[(lots.t == t) & (lots.event == 1)].nos.sum()
+        if at_risk > 0:
+            s_ *= 1 - ev / at_risk
+        out.append((t, s_))
+    return pd.DataFrame(out, columns=["days", "share_still_held"])
+
+
+def half_life(curve):
+    below = curve[curve.share_still_held <= 0.5]
+    return int(below.days.iloc[0]) if len(below) else None
+
+
 seg_rows = []
 for name, hosts in (("top 10%", big), ("other 90%", set(per_host.index) - big)):
     rcv = received[received.host.isin(hosts)]
@@ -108,27 +131,15 @@ for name, hosts in (("top 10%", big), ("other 90%", set(per_host.index) - big)):
     cutoff = END - pd.Timedelta(days=30)
     base = rcv[rcv.day <= cutoff].received.sum()
     sold30 = cc[(cc.day_received <= cutoff) & (cc.holding_days <= 30) & cc.category.isin(PROBABLE_SALE)].nos.sum()
-    sales = cc[cc.category.isin(PROBABLE_SALE)].sort_values("holding_days")
-    median_days = sales[sales.nos.cumsum() >= sales.nos.sum() / 2].holding_days.iloc[0] if len(sales) else None
+    hl = half_life(km_curve(cc, rem[rem.host.isin(hosts)]))   # censoring-corrected
     seg_rows.append({"segment": name, "hosts": len(hosts), "nos_received": rcv.received.sum(),
-                     "probable_sale_30d": sold30 / base if base else None, "median_days_to_sale": median_days})
+                     "probable_sale_30d": sold30 / base if base else None, "km_half_life_days": hl})
     print(f"  {name:9}: {len(hosts):>3} hosts, {rcv.received.sum():>9,.0f} NOS received, "
-          f"sold within 30 d: {sold30/base:5.1%}, median days to sale: {median_days}")
+          f"sold within 30 d: {sold30/base:5.1%}, half-life (KM, any outflow): {hl} d")
 pd.DataFrame(seg_rows).to_csv(OUT / "segments.csv", index=False)
 
 # ---------- 4. Holding curve (amount-weighted Kaplan-Meier, any outflow) ----------
-lots_all = pd.concat([
-    c.assign(event=1, t=c.holding_days)[["t", "nos", "event"]],
-    rem.assign(event=0, t=(END - rem.day_received).dt.days)[["t", "nos", "event"]],
-])
-surv, s = [], 1.0
-for t in range(0, 61):
-    at_risk = lots_all[lots_all.t >= t].nos.sum()
-    ev = lots_all[(lots_all.t == t) & (lots_all.event == 1)].nos.sum()
-    if at_risk > 0:
-        s *= 1 - ev / at_risk
-    surv.append((t, s))
-sv = pd.DataFrame(surv, columns=["days", "share_still_held"])
+sv = km_curve(c, rem)
 sv.to_csv(OUT / "holding_curve.csv", index=False)
 print("\nShare still held (Kaplan-Meier, any outflow): "
       + ", ".join(f"{d} d = {sv.share_still_held[d]:.0%}" for d in (1, 7, 30, 60)))
