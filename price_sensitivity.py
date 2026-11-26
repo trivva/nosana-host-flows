@@ -56,6 +56,7 @@ days = pd.date_range(rec.day.min(), END)
 df = pd.DataFrame(index=days)
 df["payouts"] = rec.groupby("day").received.sum().reindex(days).fillna(0)
 df["sold"] = snt.groupby("day").sent.sum().reindex(days).fillna(0)
+df["sold_kraken"] = snt[snt.category == "cex"].groupby("day").sent.sum().reindex(days).fillna(0)
 df["sold_big"] = snt[snt.host.isin(big)].groupby("day").sent.sum().reindex(days).fillna(0)
 df["sold_small"] = snt[~snt.host.isin(big)].groupby("day").sent.sum().reindex(days).fillna(0)
 df["pay_big"] = rec[rec.host.isin(big)].groupby("day").received.sum().reindex(days).fillna(0)
@@ -153,20 +154,25 @@ pd.DataFrame(rows).to_csv(OUT / "price_sensitivity.csv", index=False)
 df.to_csv(OUT / "daily_panel.csv", index_label="day")
 
 # ---------- chart ----------
-BLUE, GRAY, GRID = "#2a78d6", "#8a8984", "#e6e5e0"
-fig, ax = plt.subplots(figsize=(7, 3.6), dpi=200)
-ax.bar(df.index, df.sold.rolling(7).mean(), color=BLUE, alpha=0.35, width=1, label="Host sales, 7-day avg (NOS)")
-ax.set_ylabel("NOS sold per day")
+# Daily bars, not a rolling mean: sales come in one-day blocks, smoothing would spread them over a week
+DARK, LIGHT, GRID = "#1f4e9c", "#9cc3ee", "#e6e5e0"
+other = df.sold - df.sold_kraken
+fig, ax = plt.subplots(figsize=(7.5, 3.8), dpi=200)
+ax.bar(df.index, df.sold_kraken / 1e3, color=DARK, width=0.9, label="Kraken deposits (one operator)")
+ax.bar(df.index, other / 1e3, bottom=df.sold_kraken / 1e3, color=LIGHT, width=0.9, label="DEX sales (incl. Jupiter), all hosts")
+ax.set_ylabel("NOS sold per day (thousands)")
 ax2 = ax.twinx()
-ax2.plot(df.index, df.price, color="#0b0b0b", linewidth=1.6, label="NOS price (USD)")
+ax2.plot(df.index, df.price, color="#0b0b0b", linewidth=1.5, label="NOS price (USD, daily close)")
 ax2.set_ylabel("NOS price (USD)")
-ax.set_title("Host sales vs NOS price (13 Aug - 24 Nov 2026)", loc="left", fontsize=11, fontweight="bold")
-for a in (ax, ax2):
-    a.spines["top"].set_visible(False)
+ax2.set_ylim(0, df.price.max() * 1.1)
+ax.set_title("Host sales come in one-day blocks (13 Aug - 24 Nov 2026)", loc="left", fontsize=11, fontweight="bold")
+for a_ in (ax, ax2):
+    a_.spines["top"].set_visible(False)
 ax.grid(axis="y", color=GRID)
+ax.set_axisbelow(True)
 h1, l1 = ax.get_legend_handles_labels()
 h2, l2 = ax2.get_legend_handles_labels()
-ax.legend(h1 + h2, l1 + l2, loc="upper left", fontsize=8, frameon=False)
+ax.legend(h1 + h2, l1 + l2, loc="upper right", fontsize=7.5, frameon=False)
 fig.autofmt_xdate()
 fig.tight_layout()
 fig.savefig(OUT / "price_vs_sales.png")
