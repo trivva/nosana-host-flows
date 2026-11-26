@@ -1,18 +1,18 @@
 """
-Lance les requêtes SQL (fichiers .sql) sur l'API SQL de Coinbase CDP
-et enregistre chaque résultat en CSV.
+Runs SQL files against the Coinbase CDP SQL API and saves each result as CSV in data/.
 
-Authentification : la Secret API key (fichier cdp_api_key.json téléchargé depuis le portail CDP),
-utilisée pour signer un jeton JWT à chaque requête. La clé ne quitte jamais ton PC.
+Auth: CDP Secret API key (cdp_api_key.json downloaded from the CDP portal), used to sign
+a short-lived JWT for each request. The key never leaves your machine.
 
-Installation (une seule fois) :
-    py -m pip install cdp-sdk
+Install once:
+    pip install cdp-sdk
 
-Usage :
-    py fetch_exports.py test.sql
-    py fetch_exports.py q6a_recu_par_host_jour.sql q6b_envoye_par_host_jour.sql
+Usage:
+    py fetch_exports.py sql/q6a_received_per_host_day.sql sql/q6b_sent_per_host_day.sql
 
-NE JAMAIS publier cdp_api_key.json (il est listé dans .gitignore).
+Results are written to data/<query_name>.csv
+
+NEVER commit cdp_api_key.json (it is listed in .gitignore).
 """
 import csv
 import json
@@ -33,7 +33,7 @@ def load_key():
     key_id = k.get("id") or k.get("name") or k.get("keyId")
     secret = k.get("privateKey") or k.get("secret")
     if not key_id or not secret:
-        sys.exit(f"Champs inattendus dans {KEY_FILE} : {list(k.keys())}")
+        sys.exit(f"Unexpected fields in {KEY_FILE}: {list(k.keys())}")
     return key_id, secret
 
 
@@ -56,8 +56,8 @@ def run(sql: str, key_id: str, secret: str) -> list[dict]:
         with urllib.request.urlopen(req, timeout=120) as r:
             data = json.load(r)
     except urllib.error.HTTPError as e:
-        sys.exit(f"Erreur {e.code} : {e.read().decode()[:500]}")
-    print(f"  {data.get('metadata', {}).get('rowCount')} lignes")
+        sys.exit(f"Error {e.code}: {e.read().decode()[:500]}")
+    print(f"  {data.get('metadata', {}).get('rowCount')} rows")
     return data["result"]
 
 
@@ -66,7 +66,8 @@ def main():
     for path in sys.argv[1:]:
         print(path)
         rows = run(open(path, encoding="utf-8").read(), key_id, secret)
-        out = os.path.splitext(path)[0] + ".csv"
+        os.makedirs("data", exist_ok=True)
+        out = os.path.join("data", os.path.splitext(os.path.basename(path))[0] + ".csv")
         with open(out, "w", newline="", encoding="utf-8") as f:
             if rows:
                 w = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
