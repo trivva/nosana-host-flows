@@ -6,7 +6,7 @@ FIFO method (first in, first out), per host:
 - every NOS outflow consumes the oldest lots first;
 - for each NOS consumed we record the holding time (days) and the destination category.
 
-Inputs : data/q6a_received_per_host_day.csv, data/q6b_sent_per_host_day.csv (CDP SQL exports)
+Inputs : data/archive_2026-11-11/ (v1 export) + data/q8a, q8b, q9a, q9b (v2 exports, CDP SQL API)
 Outputs: output/*.csv, output/*.png, printed summary
 """
 from collections import deque
@@ -20,13 +20,39 @@ OUT = ROOT / "output"
 OUT.mkdir(exist_ok=True)
 
 SALE = {"cex", "dex"}                                  # direct sale venues
-PROBABLE_SALE = SALE | {"consolidated_emptied"}        # + consolidation wallets that were emptied
+PROBABLE_SALE = SALE | {"consolidated_emptied", "second_hop_sale"}  # + emptied consolidation, sold one hop later
 ALL_EXITS = PROBABLE_SALE | {"consolidated_kept", "other"}
-END = pd.Timestamp("2026-11-11")                       # last day of data
-CAT_ORDER = {"cex": 0, "dex": 1, "consolidated_emptied": 2, "consolidated_kept": 3, "other": 4}
+SPLIT = pd.Timestamp("2026-08-28")                     # first day of the current CDP window (90-day retention)
+END = pd.Timestamp("2026-11-25")                       # last complete day of data
+CAT_ORDER = {"cex": 0, "dex": 1, "second_hop_sale": 2, "consolidated_emptied": 3, "consolidated_kept": 4, "other": 5}
+EXTRA_DEX = {"66y7ViQ6mUyYa1sPDRrroPuAAuTeN1Cb4jKb6FEE5sR1",   # Orca NOS-RENDER pool
+             "8ZPyVHWS2gom2AAkiy8WGpQHLvo2mSnkxJ7UYznDz6EV"}   # Meteora NOS-WSOL pool
 
-received = pd.read_csv(ROOT / "data/q6a_received_per_host_day.csv", parse_dates=["day"])
-sent = pd.read_csv(ROOT / "data/q6b_sent_per_host_day.csv", parse_dates=["day"])
+# --- v2 data: archived v1 export (13-27 Aug) + current CDP window (28 Aug -> END) ---
+D = ROOT / "data"
+r1 = pd.read_csv(D / "archive_2026-11-11/q6a_received_per_host_day.csv", parse_dates=["day"])
+s1 = pd.read_csv(D / "archive_2026-11-11/q6b_sent_per_host_day.csv", parse_dates=["day"]).assign(dest="")
+r2 = pd.read_csv(D / "q8a_received_per_host_day_v2.csv", parse_dates=["day"])
+s2 = pd.read_csv(D / "q8b_sent_per_host_day_v2.csv", parse_dates=["day"]).fillna({"dest": ""})
+received = pd.concat([r1[r1.day < SPLIT], r2[(r2.day >= SPLIT) & (r2.day <= END)]])[["host", "day", "received"]]
+sent = pd.concat([s1[s1.day < SPLIT], s2[(s2.day >= SPLIT) & (s2.day <= END)]])[["host", "day", "category", "dest", "sent"]]
+
+# DEX pools found one hop later
+sent.loc[sent.dest.isin(EXTRA_DEX), "category"] = "dex"
+
+# Second-hop attribution: NOS sent to a personal "other" wallet counts as sold in proportion to the share
+# of everything that wallet received which it later sent to a sale venue (CEX, DEX, Jupiter)
+w_in = pd.read_csv(D / "q9a_other_wallet_in.csv")
+w_out = pd.read_csv(D / "q9b_other_wallet_out.csv")
+w = w_in.merge(w_out, on="wallet", how="left").fillna(0)
+frac = (w.nos_out_sale / w.nos_in_total.where(w.nos_in_total > 0)).clip(0, 1).fillna(0)
+sold_share = dict(zip(w.wallet, frac))
+oth = sent.category == "other"
+f = sent.loc[oth, "dest"].map(sold_share).fillna(0)
+hop = sent[oth].assign(category="second_hop_sale", sent=sent.loc[oth, "sent"] * f)
+sent.loc[oth, "sent"] = sent.loc[oth, "sent"] * (1 - f)
+sent = pd.concat([sent, hop])
+sent = sent[sent.sent > 1e-9].groupby(["host", "day", "category"], as_index=False).sent.sum()
 
 # ---------- 1. FIFO per host ----------
 consumed = []      # host, day_received, day_sent, holding_days, category, nos
@@ -69,7 +95,7 @@ print(f"  sent out (FIFO)   : {c.nos.sum():,.0f}  ({c.nos.sum()/total:.0%})")
 print(f"  still held        : {rem.nos.sum():,.0f}  ({rem.nos.sum()/total:.0%})")
 print(f"  outflows not matched to a payout in the period: {sum(unmatched.values()):,.0f}")
 
-order = ["cex", "dex", "consolidated_emptied", "consolidated_kept", "other"]
+order = ["cex", "dex", "second_hop_sale", "consolidated_emptied", "consolidated_kept", "other"]
 dest = c.groupby("category").nos.sum().reindex(order).fillna(0)
 print("\nDestination of NOS received (FIFO):")
 for k, v in dest.items():
@@ -159,7 +185,7 @@ for side in ("top", "right"):
 fig.tight_layout()
 fig.savefig(OUT / "holding_curve.png")
 
-labels = {"cex": "Exchange (Kraken)", "dex": "DEX", "consolidated_emptied": "Consolidated, then moved on",
+labels = {"cex": "Exchange (Kraken)", "dex": "DEX (incl. Jupiter)", "second_hop_sale": "Sold one hop later", "consolidated_emptied": "Consolidated, then moved on",
           "consolidated_kept": "Consolidated and kept", "other": "Other / unlabelled"}
 d2 = dest.rename(labels)
 d2["Still with the host"] = rem.nos.sum()
@@ -169,7 +195,7 @@ ax.barh(d2.index, d2.values / total * 100, color=BLUE, height=0.6)
 for i, v in enumerate(d2.values / total * 100):
     ax.text(v + 0.5, i, f"{v:.0f}%", va="center", fontsize=9)
 ax.set_xlabel("% of NOS paid to hosts")
-ax.set_title("Where NOS paid to hosts goes (Aug - Nov 2026)", loc="left", fontsize=11, fontweight="bold")
+ax.set_title("Where NOS paid to hosts goes (13 Aug - 25 Nov 2026)", loc="left", fontsize=11, fontweight="bold")
 for side in ("top", "right"):
     ax.spines[side].set_visible(False)
 fig.tight_layout()
